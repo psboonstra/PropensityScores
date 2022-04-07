@@ -1,6 +1,6 @@
 ---
 title: "Propensity Score Methods"
-author: "www.umich.edu/~philb/Presentations/PropensityScores.html"
+author: "www.umich.edu/~philb/Winter2022Slides/PropensityScores.html"
 date: "Univeristy of Michigan Biostatistics 699, Winter 2022"
 geometry: margin=0.5in
 output: 
