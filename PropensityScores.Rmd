@@ -1,0 +1,675 @@
+---
+title: "Propensity Score Methods"
+author: "www.umich.edu/~philb/Presentations/PropensityScores.html"
+date: "Univeristy of Michigan Biostatistics 699, Winter 2022"
+geometry: margin=0.5in
+output: 
+  ioslides_presentation:
+    transition: 0.1
+    css: ~/Desktop/Work/CV/Styles/temp_fancy_logo_only_first.css
+    includes:
+      in_header: ~/Desktop/Work/CV/Styles/slides_header.html
+    incremental: no
+    widescreen: true
+    logo: ~/Desktop/Work/CV/Styles/Biostat-informal.png
+    slide_level: 2
+  pdf_document:
+    highlight: zenburn
+    includes:
+      in_header: ~/Desktop/Work/CV/Styles/tex_pdf_header.txt
+    keep_tex: yes
+    toc: no
+    fig_caption: false
+    fig_height: 6
+    fig_width: 3
+  beamer_presentation:
+    highlight: zenburn
+    includes:
+      in_header: ~/Desktop/Work/CV/Styles/tex_header.txt
+    keep_tex: yes
+    theme: Pittsburgh
+    toc: no
+    fig_caption: false
+bibliography: ../../../../CV/Styles/references.bib  
+---
+
+```{r setup, include=FALSE}
+library(tidyverse); 
+library(broom);
+library(DiagrammeR);
+library(sandwich)
+library(haven)
+library(mgcv)
+library(MatchIt)
+knitr::opts_chunk$set(echo = T, warning = F, message = F);
+knitr::knit_hooks$set(mysize = function(before, options, envir) {
+  if (before) 
+    return(options$size);
+})
+options(digits = 3);
+figure_scaler = 5/8;#1/2 for ioslides; ~1/3 for word, pdf
+text_scaler = 1;#1 for ioslides; 2/3 for word, pdf
+fig.x = 16 * figure_scaler;
+fig.y = 9 * figure_scaler;
+cex_scale = 1.75 * figure_scaler;
+theme_set(theme_bw())
+
+```
+
+## Sources
+
+- Content derived from earlier 699 presentations (by Matt Schipper, Brisa Sanchez, Jeremy Taylor) and
+Jean Morrison's 881 slides
+
+- Also lots of references (cited throughout)
+
+## Randomized two-group experiment
+
+- Subjects are assigned in equal proportions to one of two treatment arms, $Z\in\{0,1\}$
+
+- Some outcome $Y$ is measured, and interest is in estimating the difference in the average outcome between the two groups
+
+- As long as assignments are randomized, the estimated difference in outcomes would be a good estimate of the *average treatment effect* (ATE): the difference in average outcomes if everyone in the population got the treatment versus if everyone didn't
+
+- This is true even in presence of other predictors $X$ that influence outcome
+
+##
+
+But when $X$ drives choice of treatment assignment, then difference in average outcomes no longer estimates ATE, due to confounding:
+
+```{r, echo = F}
+create_graph() %>%
+  add_node(label = "Z",node_aes = node_aes(color = "black", fontname = "serif")) %>%
+  add_node(label = "X",node_aes = node_aes(color = "black", fontname = "serif")) %>%
+  add_node(label = "Y",node_aes = node_aes(color = "black", fontname = "serif")) %>%
+  add_edge(from = "X", to = "Y",edge_aes = edge_aes(color = "black")) %>%
+  add_edge(from = "X", to = "Z",edge_aes = edge_aes(color = "black")) %>%
+  add_edge(from = "Z", to = "Y",edge_aes = edge_aes(color = "black")) %>%
+  render_graph()
+```
+
+## General goal
+
+You are interested in estimating the ATE but have observational data, i.e. the
+treatment is not randomized
+
+Strategically analyze / manipulate the data you have so that result mimics 
+what you would get from randomized trial
+
+
+## Propensity scores
+
+Propensity score defined as $e(X) = \Pr(Z=1|X)$
+
+- In clinical trials, this is known
+
+- In present context, we estimate this using our data
+
+## Balancing property of propensity scores 
+
+### Theorem 1, @rosenbaum.biometrika
+
+$\{Z\perp X\} | e(X)$
+
+In words, $Z$ is conditionally independent of predictors $X$ given (true) propensity score. Consequences 
+of this are:
+
+- If you know true propensity for treatment, you learn nothing additional about
+treatment assignment were you to have full set of predictors $X$. 
+
+- You would expect distribution of $X$s to be identical between treatment arms
+among observations with common value of $e(X)$
+
+- For observations with a common value of $e(X)$, you can analyze outcomes as if 
+they come from randomized trial with randomization probability $e(X)$
+
+
+## Using propensity score
+
+Several approaches for 
+
+1. Adjusting for PS
+2. Stratifying
+3. Matching
+4. Weighting
+
+See @franklin.sim for helpful overview
+
+## 1. Adjusting for PS
+
+A randomized study with a common treatment assignment probability might analyze
+data as
+
+$$\mathrm{logit}(E[Y|Z]) = \beta_0 + \beta_1 Z$$
+
+If you "know" (i.e. have estimated) treatment propensity $e$, then you might instead use
+
+$$\mathrm{logit}(E[Y|Z,e]) = \beta_0 + \beta_1 Z + f(e)$$
+where $f$ is some function that is estimated (could be linear, could be more flexible). 
+
+Estimate of ATE would be average expected outcome if all subjects were in one group
+minus same average if all subjects were in other group: 
+$$\frac{1}{n}\sum_{i=1}^n ({\hat E}[Y_i|Z_i=1,e_i] - {\hat E}[Y_i|Z_i=1,e_i])$$
+
+## 2. Stratifying
+
+1. Identify subgroups of observations with "similar" propensity values to create
+multiple strata
+
+2. Calculate observation-specific weights: $w_i  = \dfrac{n_s n_z}{n_{zs} n}$. This is empiric estimate of $\Pr(Z=z) / \Pr(Z=z|S=s)$
+
+3. Then estimate treatment effect by $$ \dfrac{\sum_{i:Z_i=1} w_i Y_i}{\sum_{i:Z_i=1} w_i}-\dfrac{\sum_{i:Z_i=0} w_i Y_i}{\sum_{i:Z_i=0} w_i}$$
+
+or estimate logistic regression model with maximum *weighted* log-likelihood
+
+## 3. Matching
+
+1. Randomly select a treated ($Z=1$) subject
+
+2. Pair with comparator ($Z=0$) subject with closest propensity score (within some distance). Otherwise discard
+
+3. Repeat until all treated subjects have been paired or discarded. 
+
+4. Estimate treatment effect **in matched dataset** by $$ \dfrac{\sum_{i:Z_i=1} Y_i}{\sum_{i:Z_i=1} 1 }-\dfrac{\sum_{i:Z_i=0} Y_i}{\sum_{i:Z_i=0}1 }$$
+
+or estimate logistic regression model with maximum log-likelihood
+
+Matching process implemented in `MatchIt` package in `R`
+
+## 4. Weighting
+
+1. Inverse propensity of treatment weights (IPW or IPTW) defined by  $w_i = Z_i / e_i + (1 - Z_i) / (1 - e_i)$, which is inverse probability of receiving treatment that was actually received 
+
+2. Estimate treatment effect by $$ \dfrac{\sum_{i:Z_i=1} w_i Y_i}{\sum_{i:Z_i=1} w_i}-\dfrac{\sum_{i:Z_i=0} w_i Y_i}{\sum_{i:Z_i=0} w_i}$$
+
+or estimate logistic regression model with maximum *weighted* log-likelihood
+
+## Inspecting balance
+
+Stratifying, matching, and weighting all yield synthetic population that can be described or analyzed as if it were randomized
+
+It can be helpful to inspect covariate distribution between treatments in synthetic population across covariates to ensure that balance has been induced
+
+## Absolute weighted standardized difference as measure of balance
+
+$$d(X,w) = 100 \times \dfrac{|\bar{X}^w_{Z=1} - \bar{X}^w_{Z=0}|}{\sqrt{(s^{w}_{Z=1})^2/2 + (s^w_{Z=0})^2/2}}$$
+Note that denominator is standard deviation not standard error. Simple diagnostic is that $d > 10\%$ suggests un-captured confounding by that variable
+
+Main idea is that with proper choice of weights, $d$ should improve, i.e. go to zero. 
+
+$\bar{X}^w_{Z=z}  = \sum_{Z=z} w_i X_i / \sum_{Z=z} w_i$ and 
+$(s^{w}_{Z=z})^2 = \frac{\sum_{Z=z} w_i}{(\sum_{Z=z} w_i)^2 - \sum_{Z=z} w_i^2}\sum_{Z=z} w_i(X_i - \bar{X}^w_{Z=z})^2$
+
+@flury.amstat, @austin.sim, @austin.sim2
+
+
+## SUPPORT: Right-heart catheterization data from @connors.jama
+
+5735 acutely ill patients admitted to one of 5 large hospitals
+
+Treatment ($Z$) was right-heart catheterization procedure
+
+Outcome ($Y$) was patient death within 30 days 
+
+Other possible confounders ($X$) were 32 predictors measuring patient demographics, 
+primary diagnosis, and comorbidities
+
+See also:
+https://www.ofcaus.org/data-examples/ipw-dr
+https://hbiostat.org/data/repo/rhc.html
+
+## Our tasks
+
+1. Estimate propensities with multivariable logistic regression
+2. Inspect distribution of propensities in each treatment group
+3. Apply four approaches 
+
+a. Inspect balance
+
+b. Compare estimates of treatment effect
+
+##
+
+```{r}
+
+rhc <- 
+  read_csv("rhc.csv", show_col_types = FALSE) %>%
+  mutate(income = as_factor(income), 
+         cat1 = as_factor(cat1), 
+         cat2 = as_factor(cat2)) %>%
+  rename(subjid = id)
+
+predictors <- setdiff(colnames(rhc),
+                      c("subjid",
+                        "swang1", #treatment
+                        "dth30" #outcome
+                      ))
+
+ps_formula <-  
+  as.formula(paste0("swang1 ~",paste0(predictors, collapse = "+")))
+
+ps_model <- 
+  glm(ps_formula, family = "binomial", data = rhc) 
+
+rhc_ps <- 
+  bind_cols(rhc %>% select(subjid, swang1, dth30), 
+            model.matrix(ps_model)[,-1],
+            ps_swang1 = predict(ps_model, type = "response", newdata = rhc))
+
+predictors <- colnames(model.matrix(ps_model)[,-1])
+
+```
+
+Fitted propensity model sorted by significance:
+
+```{r}
+tidy(ps_model) %>% 
+  arrange(desc(abs(statistic))) %>% 
+  print(n = Inf)
+
+```
+
+
+##
+
+```{r, echo = FALSE, fig.width=fig.x, fig.height = fig.y}
+
+ggplot() + 
+  geom_histogram(data = filter(rhc_ps, 
+                               swang1 == 1), 
+                 mapping = aes(x = ps_swang1, 
+                               y = after_stat(density),
+                               fill = "RHC"),
+                 bins = 40) + 
+  geom_histogram(data = filter(rhc_ps, 
+                               swang1 == 0), 
+                 mapping = aes(x = ps_swang1,
+                               y = -1 * after_stat(density),
+                               fill = "No RHC"),
+                 bins = 40) +
+  scale_x_continuous(name = "Estimated propensity for RHC", 
+                     expand = expansion(add = 0.003)) +
+  scale_y_continuous(name = "Unweighted frequency", 
+                     breaks = NULL,
+                     expand = expansion(mult = 0.035)) + 
+  scale_fill_manual(name = "Actual treatment delivered", 
+                    breaks = c("RHC", "No RHC"),
+                    values = c("#4DAF4A", "#377EB8")) + 
+  theme(text = element_text(size = 22, family = "serif"),
+        legend.position = c(0.8, 0.2));
+
+```
+
+
+## Stratifying, applied to RHC
+
+```{r}
+
+# Use 0.025-width propensity bins
+rhc_ps <- 
+  rhc_ps %>% 
+  mutate(ps_quantile = cut_width(ps_swang1, width = 0.025, center = 0.0125)) 
+
+rhc_ps %>% 
+  count(swang1, ps_quantile) %>% 
+  pivot_wider(id_cols = ps_quantile, 
+              names_from = swang1, 
+              values_from = n,
+              values_fill = 0) %>% 
+  print(n = Inf)
+
+# Calculate weights based upon strata size, treatment size, and strata-treatment size
+rhc_ps <- 
+  left_join(rhc_ps, 
+            rhc_ps %>% 
+              count(ps_quantile, name = "stratum_size"), 
+            by = "ps_quantile") %>%
+  left_join(rhc_ps %>%
+              count(swang1, name = "treatment_size"), 
+            by = "swang1") %>%
+  left_join(rhc_ps %>%
+              count(swang1, ps_quantile, name = "stratum_treatment_size"),
+            by = c("swang1", "ps_quantile")) %>%
+  mutate(stratified_weight = stratum_size * treatment_size / stratum_treatment_size / n(), 
+         .keep = "unused")
+
+# weight given to each observation in each group
+rhc_ps %>%
+  group_by(swang1, ps_quantile) %>%
+  summarize(num = n(), 
+            wgt_per_obs = first(stratified_weight), 
+            wgt_total  = num * wgt_per_obs) %>% 
+  pivot_wider(id_cols = ps_quantile, 
+              names_from = swang1, 
+              values_from = c(num, wgt_per_obs, wgt_total))
+
+```
+
+## Matching, applied to RHC
+
+### Use `MatchIt` package 
+
+```{r}
+library(MatchIt)
+matched_rhc <- matchit(ps_formula, data = rhc, caliper = 0.025, std.caliper = FALSE)
+
+matched_rhc 
+
+matched_rhc_pairs <- 
+  get_matches(matched_rhc, weights = "matched_weight")
+
+head(matched_rhc_pairs)
+
+rhc_ps <- 
+  left_join(rhc_ps, 
+            matched_rhc_pairs %>%
+              select(subjid, matched_weight), 
+            by = "subjid") %>%
+  mutate(matched_weight = ifelse(is.na(matched_weight), 0, matched_weight))
+
+```
+
+
+
+## IPW, applied to RHC
+
+```{r}
+rhc_ps <- 
+  rhc_ps %>%
+  mutate(ip_weight = swang1 / ps_swang1 + (1 - swang1) / (1 - ps_swang1))
+```
+
+
+
+##
+
+```{r, echo = FALSE, fig.width=fig.x, fig.height = 1.2*fig.y}
+
+weighted.var <- function(x, w, ...) {
+  sum(w) * sum(w * (x - weighted.mean(x, w, ...))^2) / (sum(w)^2  - sum(w^2))
+}
+
+equal_weighted <- 
+  full_join(
+    rhc_ps %>%
+      group_by(swang1) %>%
+      summarize(across(all_of(predictors), mean)) %>%
+      arrange(desc(swang1)) %>%
+      select(-swang1) %>%
+      summarize(across(where(is.numeric), ~ first(.x) - last(.x))) %>%
+      pivot_longer(everything(), values_to = "mean_diff"),
+    rhc_ps %>%
+      group_by(swang1) %>%
+      summarize(across(all_of(predictors), var)) %>%
+      arrange(desc(swang1)) %>%
+      select(-swang1) %>%
+      summarize(across(where(is.numeric), ~ sqrt(mean(.x)))) %>%
+      pivot_longer(everything(), values_to = "pooled_sd")) %>%
+  mutate(std_diff = 100 * mean_diff / pooled_sd)
+
+ip_weighted <-
+  full_join(
+    rhc_ps %>%
+      group_by(swang1) %>%
+      summarize(across(all_of(predictors), ~weighted.mean(.x, ip_weight))) %>%
+      arrange(desc(swang1)) %>%
+      select(-swang1) %>%
+      summarize(across(where(is.numeric), ~ first(.x) - last(.x))) %>%
+      pivot_longer(everything(), values_to = "mean_diff_ipw"),
+    rhc_ps %>%
+      group_by(swang1) %>%
+      summarize(across(all_of(predictors), ~weighted.var(.x, ip_weight))) %>%
+      arrange(desc(swang1)) %>%
+      select(-swang1) %>%
+      summarize(across(where(is.numeric), ~ sqrt(mean(.x)))) %>%
+      pivot_longer(everything(), values_to = "pooled_sd_ipw")) %>%
+  mutate(std_diff_ipw = 100 * mean_diff_ipw / pooled_sd_ipw)
+
+
+stratified_weighted <-
+  full_join(
+    rhc_ps %>%
+      group_by(swang1) %>%
+      summarize(across(all_of(predictors), ~weighted.mean(.x, stratified_weight))) %>%
+      arrange(desc(swang1)) %>%
+      select(-swang1) %>%
+      summarize(across(where(is.numeric), ~ first(.x) - last(.x))) %>%
+      pivot_longer(everything(), values_to = "mean_diff_stratified"),
+    rhc_ps %>%
+      group_by(swang1) %>%
+      summarize(across(all_of(predictors), ~weighted.var(.x, stratified_weight))) %>%
+      arrange(desc(swang1)) %>%
+      select(-swang1) %>%
+      summarize(across(where(is.numeric), ~ sqrt(mean(.x)))) %>%
+      pivot_longer(everything(), values_to = "pooled_sd_stratified")) %>%
+  mutate(std_diff_stratified = 100 * mean_diff_stratified / pooled_sd_stratified)
+
+matched_weighted <-
+  full_join(
+    rhc_ps %>%
+      group_by(swang1) %>%
+      summarize(across(all_of(predictors), ~weighted.mean(.x, matched_weight))) %>%
+      arrange(desc(swang1)) %>%
+      select(-swang1) %>%
+      summarize(across(where(is.numeric), ~ first(.x) - last(.x))) %>%
+      pivot_longer(everything(), values_to = "mean_diff_matched"),
+    rhc_ps %>%
+      group_by(swang1) %>%
+      summarize(across(all_of(predictors), ~weighted.var(.x, matched_weight))) %>%
+      arrange(desc(swang1)) %>%
+      select(-swang1) %>%
+      summarize(across(where(is.numeric), ~ sqrt(mean(.x)))) %>%
+      pivot_longer(everything(), values_to = "pooled_sd_matched")) %>%
+  mutate(std_diff_matched = 100 * mean_diff_matched / pooled_sd_matched)
+
+ggplot(data = full_join(equal_weighted, 
+                        ip_weighted, 
+                        by = "name") %>%
+         full_join(matched_weighted, 
+                   by = "name") %>%
+         full_join(stratified_weighted, 
+                   by = "name") %>%
+         arrange(abs(std_diff)) %>%
+         mutate(name = factor(name) %>% fct_inorder())) + 
+  geom_vline(xintercept = 0) + 
+  geom_point(aes(x = abs(std_diff), y = name, color = "Equal", shape = "Equal"), size = 3) + 
+  geom_point(aes(x = abs(std_diff_ipw), y = name, color = "IP", shape = "IP"), size = 3) + 
+  geom_point(aes(x = abs(std_diff_stratified), y = name, color = "Stratified", shape = "Stratified"), size = 3) + 
+  geom_point(aes(x = abs(std_diff_matched), y = name, color = "Matched", shape = "Matched"), size = 3) + 
+  scale_y_discrete(name = NULL) + 
+  scale_x_continuous(name = "Absolute Weighted Standardized Difference", 
+                     breaks = seq(-30, 50, by = 10), 
+                     expand = expansion(mult = 0.02)) + 
+  scale_color_brewer(name = NULL, palette ="Dark2") + 
+  scale_shape_discrete(name = NULL) + 
+  theme(text = element_text(size = 22, family = "serif"),
+        legend.position = c(0.8, 0.2));
+
+```
+
+## Observed difference in outcome
+
+```{r}
+model_obs <- gam(dth30 ~ swang1, family = "binomial", data = rhc_ps)
+
+obs_diff <- 
+  predict(model_obs, type = "response", newdata = rhc_ps %>% slice(1) %>% mutate(swang1 = 1)) - 
+  predict(model_obs, type = "response", newdata = rhc_ps %>% slice(1) %>% mutate(swang1 = 0)) 
+
+obs_diff
+```
+
+
+## RHC analysis, adjusting for PS in model
+
+
+Use generalized additive models (GAMs) to equip propensity score with a smoothing spline. 
+Implemented in `mgcv::gam`. 
+
+```{r}
+
+# Parametric component for treatment; non-parametric component for ps
+model_adjust_ps <- gam(dth30 ~ swang1 + s(ps_swang1), family = "binomial", data = rhc_ps)
+
+# Estimated treatment effect is average predicted response if all were treated
+resp_rhc <- predict(model_adjust_ps, type = "response", newdata = rhc_ps %>% mutate(swang1 = 1))
+resp_not_rhc <- predict(model_adjust_ps, type = "response", newdata = rhc_ps %>% mutate(swang1 = 0))
+adjusted_diff <-
+  mean(resp_rhc) - 
+  mean(resp_not_rhc)
+
+adjusted_diff
+
+```
+
+`resp_rhc - resp_not_rch` versus `ps_swang`:
+
+```{r, echo = FALSE, fig.width=fig.x, fig.height = 0.9*fig.y}
+ggplot() + 
+  geom_point(aes(x = rhc_ps %>% pull(ps_swang1), y = resp_rhc - resp_not_rhc),
+             size = 1, 
+             alpha = 0.5) + 
+  scale_x_continuous(name = "Estimated Propensity") + 
+  scale_y_continuous(name = "Estimated Treatment Effect") + 
+  theme(text = element_text(size = 22, family = "serif"),
+        legend.position = c(0.8, 0.2));
+```
+
+## RHC analysis, stratifying by PS
+
+```{r}
+
+
+# Fit GLM weighting by stratum weights
+model_stratified <- glm(dth30 ~ swang1, family = "binomial", weights = stratified_weight, data = rhc_ps)
+
+# Estimated treatment effect is average predicted response if all were treated
+# versus if all were untreated
+stratified_diff <- 
+  predict(model_stratified, type = "response", newdata = rhc_ps %>% slice(1) %>% mutate(swang1 = 1)) - 
+  predict(model_stratified, type = "response", newdata = rhc_ps %>% slice(1) %>% mutate(swang1 = 0)) 
+stratified_diff
+
+# Same as taking difference in weighted means
+rhc_ps %>% 
+  group_by(swang1) %>%
+  summarize(mean_dth30 = weighted.mean(dth30, stratified_weight)) %>%
+  arrange(swang1) %>%
+  pull(mean_dth30) %>%
+  diff()
+```
+
+
+
+## RHC analysis, matching by PS
+
+```{r}
+matched_diff <- 
+  rhc_ps %>% 
+  group_by(swang1) %>%
+  summarize(mean_dth30 = weighted.mean(dth30, matched_weight)) %>%
+  arrange(swang1) %>%
+  pull(mean_dth30) %>%
+  diff()
+
+matched_diff
+```
+
+## RHC analysis, weighting by IP
+
+```{r}
+model_ipw <- glm(dth30 ~ swang1, family = "binomial", weights = ip_weight, data = rhc_ps)
+
+# Estimated treatment effect is average predicted response if all were treated
+# versus if all were untreated
+ipw_diff <- 
+  predict(model_ipw, type = "response", newdata = rhc_ps %>% slice(1) %>% mutate(swang1 = 1)) - 
+  predict(model_ipw, type = "response", newdata = rhc_ps %>% slice(1) %>% mutate(swang1 = 0)) 
+
+ipw_diff
+```
+
+## Comparison
+
+```{r, echo = FALSE}
+tribble(~"Method", ~"Result",
+        "Observed", obs_diff,
+        "Adjusted", adjusted_diff,
+        "Stratified", stratified_diff,
+        "Matched", matched_diff, 
+        "IPW", ipw_diff) %>% knitr::kable()
+```
+
+## Inference
+
+In a modeling framework, it is fairly straightforward to conduct inference. Subtle
+issue is that because propensities are estimated, standard variance estimates will 
+likely be too small. The sandwich variance estimator will tend to give more 
+accurate inference:
+
+```{r}
+# regular variance estimator
+sqrt(diag(vcov(model_ipw)))
+# vcovHC from sandwich package for robust variance estimator
+sqrt(diag(vcovHC(model_ipw, type = "HC")))
+
+```
+
+Can also use the bootstrap to estimate variance and conduct inference
+
+## Assumptions
+
+Propensity score approaches depend upon the validity of certain assumptions:
+
+- Ignorability: No unmeasured confounding
+- Consistency: Outcome we observe is equal to outcome in counterfactual world
+- Positivity: $0 < \Pr(Z=1|X) < 1$ for all $X$
+- Propensity score model is correctly specified
+
+## Instability of IPW
+
+Sometimes IP weights will be very large, e.g. $Z=1$ and $e(X)\approx 0$. 
+
+- Can trim weights: exclude observations with $e_i < \alpha$ or $e_i > 1- \alpha$ 
+
+- More stable weighting schemes exist:
+
+    - Overlap weights (@li.aje): $w_i = Z_i(1-e_i) + (1-Z_i)e_i$
+
+    - Matching weights (@li.ijb): $w_i = \dfrac{\min(1-e_i, e_i)}{Z_ie_i + (1-Z_i)(1-e_i)}$
+
+## Estimands
+
+An estimand is defined as the true value of a parameter in a target population. 
+Different schemes may yield different estimands
+
+- The ATE is the expected difference in the outcome if everyone got one treatment
+versus if everyone got the other treatment
+
+- The ATT (Average Treatment effect among Treated) is the expected difference
+in the outcome if the population of observations who were treated got one treatment 
+versus if that same population got the other treatment
+
+- Overlap weights estimate neither ATE nor ATT
+
+
+## More things to read
+
+Good introductory / review articles for issues related to propensity analyses:
+
+@austin.sim2, @austin.sim, @franklin.sim
+
+http://www2.stat.duke.edu/~fl35/teaching/640/Chap3.4_observational_weighting.pdf
+
+One of the first papers that identifies propensity score as a balancing score:
+
+@rosenbaum.biometrika
+
+Other helpful articles:
+
+@joffe.amstat, @lunceford.sim
+
+
+
+
+## References
